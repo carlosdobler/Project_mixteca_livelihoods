@@ -15,6 +15,48 @@ list.files(dir_encuestas, full.names = T)[263] %>%
   as_tibble() -> raw_table
 
 
+# Functions ---------------------------------------------------------------------------------------
+
+functions_list <- list(
+  
+  income = function(...){
+    
+    x <- c(...)
+    
+    tibble(inc = raw_table[raw_table$A == x[1] ,"B", drop = T],
+           freq = raw_table[raw_table$A == x[2] ,"B", drop = T],
+           meses = raw_table[raw_table$A == x[3] ,"B", drop = T]) %>%
+      
+           {if(!is.na(.$inc) & is.na(.$freq)) "ER: Falta dato (al año o al mes?)" else
+             if(is.na(.$inc)) 0 else
+               
+               mutate(.,
+                      inc = case_when(is.na(inc) | str_detect(inc, "NADA") ~ "0",
+                                      str_detect(inc, "MENOS") ~ "500",
+                                      str_detect(inc, "1,999") ~ "1,500",
+                                      str_detect(inc, "2,999") ~ "2,500",
+                                      str_detect(inc, "3,999") ~ "3,500",
+                                      str_detect(inc, "4,999") ~ "4,500",
+                                      TRUE ~ as.character(parse_number(inc))),
+                      inc = parse_number(inc),
+  
+                      meses = case_when(is.na(meses) ~ NA_character_,
+                                        TRUE ~ str_sub(meses, 5, 5)),
+                      meses = parse_number(meses),
+                      
+                      inc =
+                        if(freq == "AL AÑO") inc else
+                          if(is.na(meses)) inc * 12 else
+                            inc * meses
+                      ) %>%
+                 pull(., inc) %>% as.character()
+           }
+  }
+)
+
+
+
+# ASSEMBLE DATA BASE ******************************************************************************
 
 tibble(
   
@@ -225,21 +267,27 @@ tibble(
   {if(is.na(.)) "F" else "T"}, # transform to logical
   
   # pension
-  pension = tibble(amount = raw_table[raw_table$A == "3.8" ,"B", drop = T],
-                   freq = raw_table[raw_table$A == "3.9" ,"B", drop = T]) %>% 
+  pension = tibble(amount = c(raw_table[raw_table$A == "3.8" ,"B", drop = T],
+                              raw_table[raw_table$A == "6.107" ,"B", drop = T]),
+                   freq = c(raw_table[raw_table$A == "3.9" ,"B", drop = T],
+                            raw_table[raw_table$A == "6.108" ,"B", drop = T])) %>% 
     
-    {mutate(.,
-            amount = case_when(str_detect(amount, "NADA") | is.na(amount) ~ 0, 
-                               str_detect(amount, "MENOS DE") ~ 500,
-                               str_detect(amount, "1,999") ~ 1500,
-                               str_detect(amount, "2,999") ~ 2500,
-                               str_detect(amount, "3,999") ~ 3500,
-                               str_detect(amount, "4,999") ~ 4500,
-                               TRUE ~ parse_number(amount)),
-            
-            freq = ifelse(is.na(freq) | freq == "AL AÑO", 1, 12))} %>% 
+    filter(across(everything(), ~!is.na(.x))) %>% 
     
-            {.$amount * .$freq},
+    {if(nrow(.) == "0") mutate(., amount = 0) else
+      if(nrow(.) == "2") "ER: Dato duplicado (dos pensiones)" else
+       mutate(.,
+              amount = case_when(str_detect(amount, "NADA") ~ 0, 
+                                 str_detect(amount, "MENOS DE") ~ 500,
+                                 str_detect(amount, "1,999") ~ 1500,
+                                 str_detect(amount, "2,999") ~ 2500,
+                                 str_detect(amount, "3,999") ~ 3500,
+                                 str_detect(amount, "4,999") ~ 4500,
+                                 TRUE ~ parse_number(amount)),
+              
+              freq = ifelse(is.na(freq) | freq == "AL AÑO", 1, 12))} %>% 
+    
+              {.$amount * .$freq},
   
   # observations?
   obs2 = raw_table[raw_table$A == "3.10" ,"B", drop = T],
@@ -632,27 +680,15 @@ tibble(
   # HOUSEHOLD COMP. + INCOME -----------------------------------------------------------------------
   
   # Composition
-  tibble(m1 = c(raw_table[raw_table$A == "6.1" ,"B", drop = T],
-                raw_table[raw_table$A == "6.4" ,"B", drop = T],
-                raw_table[raw_table$A == "6.7" ,"B", drop = T],
-                raw_table[raw_table$A == "6.10" ,"B", drop = T],
-                raw_table[raw_table$A == "6.13" ,"B", drop = T],
-                raw_table[raw_table$A == "6.16" ,"B", drop = T],
-                raw_table[raw_table$A == "6.19" ,"B", drop = T],
-                raw_table[raw_table$A == "6.22" ,"B", drop = T],
-                raw_table[raw_table$A == "6.25" ,"B", drop = T],
-                raw_table[raw_table$A == "6.28" ,"B", drop = T]),
+  tibble(m1 = str_c("raw_table[raw_table$A == '6.", seq(1, 28, by = 3), "', 'B', drop = T]") %>% 
+           str_flatten(collapse = ", ") %>%
+           {str_c("c(", ., ")")} %>% 
+           {eval(parse(text = .))},
          
-         m2 = c(raw_table[raw_table$A == "6.2" ,"B", drop = T],
-                raw_table[raw_table$A == "6.5" ,"B", drop = T],
-                raw_table[raw_table$A == "6.8" ,"B", drop = T],
-                raw_table[raw_table$A == "6.11" ,"B", drop = T],
-                raw_table[raw_table$A == "6.14" ,"B", drop = T],
-                raw_table[raw_table$A == "6.17" ,"B", drop = T],
-                raw_table[raw_table$A == "6.20" ,"B", drop = T],
-                raw_table[raw_table$A == "6.23" ,"B", drop = T],
-                raw_table[raw_table$A == "6.26" ,"B", drop = T],
-                raw_table[raw_table$A == "6.29" ,"B", drop = T])) %>% 
+         m2 = str_c("raw_table[raw_table$A == '6.", seq(2, 29, by = 3), "', 'B', drop = T]") %>% 
+           str_flatten(collapse = ", ") %>%
+           {str_c("c(", ., ")")} %>% 
+           {eval(parse(text = .))}) %>% 
     
     filter(across(everything(), ~!is.na(.x))) %>% 
     mutate(m1 = case_when(str_detect(m1, "A$") | m1 == "MADRE" ~ "FEM",
@@ -667,21 +703,64 @@ tibble(
               children = sum(m2 < 12)),
   
   # Escolaridad
-  tibble(m1 = c(raw_table[raw_table$A == "6.3" ,"B", drop = T],
-                raw_table[raw_table$A == "6.6" ,"B", drop = T],
-                raw_table[raw_table$A == "6.9" ,"B", drop = T],
-                raw_table[raw_table$A == "6.12" ,"B", drop = T],
-                raw_table[raw_table$A == "6.15" ,"B", drop = T],
-                raw_table[raw_table$A == "6.18" ,"B", drop = T],
-                raw_table[raw_table$A == "6.21" ,"B", drop = T],
-                raw_table[raw_table$A == "6.24" ,"B", drop = T],
-                raw_table[raw_table$A == "6.27" ,"B", drop = T],
-                raw_table[raw_table$A == "6.30" ,"B", drop = T])) %>% 
+  tibble(m1 = str_c("raw_table[raw_table$A == '6.", seq(3, 30, by = 3), "', 'B', drop = T]") %>% 
+           str_flatten(collapse = ", ") %>%
+           {str_c("c(", ., ")")} %>% 
+           {eval(parse(text = .))}) %>% 
            
     filter(!is.na(m1)) %>% 
     summarize(educ_mas_sec = sum(str_detect(m1, "AVANZADO"))),
   
   # Income
+  income_agricultura = functions_list$income("6.37", "6.38", "6.39"),
+  income_ganaderia = functions_list$income("6.46", "6.47", "6.48"),
+  income_alfareria = functions_list$income("6.55", "6.56", "6.57"),
+  income_jornales = functions_list$income("6.64", "6.65", "6.66"),
+  income_contruccion = functions_list$income("6.73", "6.74", "6.75"),
+  
+  income_otra_name_1 = raw_table[raw_table$A == "6.77" ,"B", drop = T],
+  income_otra_cant_1 = if(is.na(income_otra_name_1)) NA else functions_list$income("6.84", "6.85", "6.86"),
+  income_otra_name_2 = raw_table[raw_table$A == "6.87" ,"B", drop = T],
+  income_otra_cant_2 = if(is.na(income_otra_name_2)) NA else functions_list$income("6.94", "6.95", "6.96"),
+  income_otra_name_3 = raw_table[raw_table$A == "6.97" ,"B", drop = T],
+  income_otra_cant_1 = if(is.na(income_otra_name_1)) NA else functions_list$income("6.104", "6.105", "6.106"),
+
+  obs5 = raw_table[raw_table$A == "6.109" ,"B", drop = T],
+  
+  
+  # MIGRATION --------------------------------------------------------------------------------------
+  
+  # ASSETS -----------------------------------------------------------------------------------------
+  
+  tractor = raw_table[raw_table$A == "4.12" ,"B", drop = T] %>%
+    {if(str_detect(., "NUESTRO")) "T" else "F"}
+  
+  yunta = raw_table[raw_table$A == "4.13" ,"B", drop = T] %>%
+    {if(str_detect(., "NUESTRO")) "T" else "F"}
+  
+  dormitorios = raw_table[raw_table$A == "8.1" ,"B", drop = T] %>% 
+    {if(is.na(.)) "ER: Falta dato" else
+      if(str_detect(., "MÁS")) "6" else (.)},
+  
+  coche = raw_table[raw_table$A == "8.7" ,"B", drop = T] %>% 
+    {if(is.na(.) | str_detect(., "NO")) "F" else "T"},
+  camioneta = raw_table[raw_table$A == "8.8" ,"B", drop = T] %>% 
+  {if(is.na(.) | str_detect(., "NO")) "F" else "T"},
+  
+  obs7 = raw_table[raw_table$A == "8.11" ,"B", drop = T],
+  
+  
+  # CALIDAD ----------------------------------------------------------------------------------------
+  
+  calidad = raw_table[raw_table$A == "10.1" ,"B", drop = T] %>% as.integer())
+  
+  
+  
+  
+  
+  
+  
+  
   
   
     
@@ -726,6 +805,8 @@ tibble(
       
 tractor ownership (4.12)
 yunta ownership (4.13)
+
+scan other activities
 
 
 
