@@ -1,0 +1,868 @@
+---
+title: "Livelihoods in La Mixteca Alta"
+author: "Carlos Dobler"
+date: "March, 2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(
+	fig.align = "center",
+	message = FALSE,
+	warning = FALSE,
+	echo = FALSE)
+
+```
+
+
+
+```{r prep, include=FALSE}
+
+# Load libraries
+library(tidyverse)
+library(corrr)
+library(patchwork)
+library(cluster)
+library(randomForest)
+
+
+# Prepare dataset
+read_rds("out/df_livelihoods.RDS") %>%
+  filter(total_income > 0) %>% # remove households with no reported activity
+  
+  mutate(
+    
+    # dichotomous
+    across(c(maiz_irrigated_area,
+             frijol_area,
+             off_farm_ag_income),
+           ~ifelse(.x > 0, "yes", "no") %>% factor(),
+           .names = "{.col}_dich"),
+    
+    # bin migration (ordinal)
+    migr_all_bin = cut(migr_all,
+                       breaks = c(-Inf, 0, median(migr_all[migr_all > 0]), Inf),
+                       labels = c("0", 
+                                  median(migr_all[migr_all > 0]), # 1 
+                                  str_c("> ", median(migr_all[migr_all > 0]))),
+                       ordered_result = T)
+    
+    
+  ) %>% 
+  
+  arrange(no_encuesta) -> df_livelihoods
+
+```
+
+
+
+```{r vars selection, include=FALSE}
+
+vars_cluster <- c("maiz_rainfed_area",
+                  "maiz_irrigated_area_dich",
+                  "frijol_area_dich",
+                  "livestock_value_sc",
+                  "off_farm_ag_income_dich",
+                  "sec_income_prop",
+                  "terc_income_prop",
+                  "migr_all_bin")
+
+vars_predictors <- c("access_level",  
+                     "marg",
+                     # "pov_perc", #"pob_loc",
+                     "land_hold", 
+                     "riego", "tractor", "yunta", 
+                     "vehicle", #"rooms", 
+                     "procampo_dich", "prospera_dich",
+                     "hh_size", 
+                     "hh_adult_may",
+                     "hh_male_adult", "hh_female_adult",
+                     "hh_teenager", 
+                     "hh_children", 
+                     "sch_9", # "sch_ov9", # "sch_6", 
+                     "total_income_sc")
+
+
+```
+
+
+```{r table, ignore = T}
+
+# Descriptive statistics
+
+# ds_a <- vector("list", 9)
+# 
+# tibble(v = "activities",
+#        freq = "-",
+#        mean = "-",
+#        sd = "-") -> ds_a[[1]]
+# 
+# # agricultural
+# df_livelihoods %>% 
+#   select(maiz_rainfed_area,
+#          maiz_irrigated_area_dich,
+#          frijol_area_dich,
+#          livestock_value_sc,
+#          off_farm_ag_income_dich
+#          ) %>% 
+#   mutate(across(where(is.factor), ~case_when(.x == "yes" ~ 1L,
+#                                              TRUE ~ NA_integer_)),
+#          across(where(is.numeric), ~case_when(.x > 0 ~ 1L,
+#                                              TRUE ~ NA_integer_))
+#   ) %>% 
+#   rowwise() %>% 
+#   summarize(freq = ifelse(sum(c_across(everything()), na.rm = T) > 0, 1, 0)) %>%
+#   summarize(v = "agricultural",
+#             freq = as.character(round(sum(freq)/n() * 100)),
+#             mean = "-",
+#             sd = "-") -> ds_a[[2]]
+# 
+# # on-farm
+# df_livelihoods %>% 
+#   select(maiz_rainfed_area,
+#          maiz_irrigated_area_dich,
+#          frijol_area_dich,
+#          livestock_value_sc
+#          ) %>% 
+#   mutate(across(where(is.factor), ~case_when(.x == "yes" ~ 1L,
+#                                              TRUE ~ NA_integer_)),
+#          across(where(is.numeric), ~case_when(.x > 0 ~ 1L,
+#                                              TRUE ~ NA_integer_))
+#   ) %>% 
+#   rowwise() %>% 
+#   summarize(freq = ifelse(sum(c_across(everything()), na.rm = T) > 0, 1, 0)) %>% 
+#   summarize(v = "on-farm",
+#             freq = as.character(round(sum(freq)/n() * 100)),
+#             mean = "-",
+#             sd = "-") -> ds_a[[3]]
+# 
+# # agricultural (dissaggregate)
+# df_livelihoods %>% 
+#   select(maiz_rainfed_area,
+#          maiz_irrigated_area_dich,
+#          frijol_area_dich,
+#          livestock_value_sc,
+#          off_farm_ag_income_dich
+#   ) %>%
+#   summarize(
+#     across(everything(), 
+#            list(
+#              freq = ~ ifelse(is.factor(.x), 
+#                              as.character(round(sum(.x == "yes")/n() * 100)), 
+#                              as.character(round(sum(.x > 0)/n() * 100))),
+#              mean = ~ ifelse(is.factor(.x), "-", as.character(round(mean(.x), 2))),
+#              sd = ~ ifelse(is.factor(.x), "-", as.character(round(sd(.x), 2)))
+#            )
+#     )
+#   ) %>% 
+#   pivot_longer(everything(),
+#                names_to = c("v", ".value"),
+#                names_pattern = "(.+)_(.+)") -> ds_a[[4]]
+#  
+# # non-agricultural
+# df_livelihoods %>% 
+#   select("sec_income_prop",
+#          "terc_income_prop",
+#          "migr_all"
+#          ) %>% 
+#   mutate(across(where(is.numeric), ~case_when(.x > 0 ~ 1L,
+#                                              TRUE ~ NA_integer_))
+#   ) %>% 
+#   rowwise() %>% 
+#   summarize(freq = ifelse(sum(c_across(everything()), na.rm = T) > 0, 1, 0)) %>% 
+#   summarize(v = "non-agricultural",
+#             freq = as.character(round(sum(freq)/n() * 100)),
+#             mean = "-",
+#             sd = "-") -> ds_a[[5]]
+# 
+# # non-agricultural (sec and terc)
+# df_livelihoods %>% 
+#   select("sec_income_prop",
+#          "terc_income_prop"
+#   ) %>% 
+#   summarize(
+#     across(everything(), 
+#            list(
+#              freq = ~ as.character(round(sum(.x > 0)/n() * 100)),
+#              mean = ~ as.character(round(mean(.x), 2)),
+#              sd = ~ as.character(round(sd(.x), 2))
+#            )
+#     )
+#   ) %>% 
+#   pivot_longer(everything(),
+#                names_to = c("v", ".value"),
+#                names_pattern = "(.+)_(.+)") -> ds_a[[6]]
+# 
+# # non-agricultural (migr)
+# df_livelihoods %>% 
+#   summarize(
+#     v = "migration",
+#     freq = as.character(round(sum(migr_all > 0)/n() * 100)),
+#     mean = "-",
+#     sd = "-") -> ds_a[[7]]
+# 
+# # assets
+# tibble(v = "assets",
+#        freq = "-",
+#        mean = "-",
+#        sd = "-") -> ds_a[[8]]
+# 
+# df_livelihoods %>% 
+#   select("land_hold", 
+#          "riego", "tractor", "yunta", 
+#          "vehicle", 
+#          "procampo_dich", "prospera_dich",
+#          "hh_size", 
+#          "hh_adult_may",
+#          "hh_male_adult", "hh_female_adult",
+#          "hh_teenager", 
+#          "hh_children", 
+#          "sch_9", 
+#          "total_income_sc"
+#   ) %>%
+#   summarize(
+#     across(everything(), 
+#            list(
+#              freq = ~ ifelse(is.factor(.x), 
+#                              as.character(round(sum(.x == "yes")/n() * 100)), 
+#                              as.character(round(sum(.x > 0)/n() * 100))),
+#              mean = ~ ifelse(is.factor(.x), "-", as.character(round(mean(.x), 2))),
+#              sd = ~ ifelse(is.factor(.x), "-", as.character(round(sd(.x), 2)))
+#            )
+#     )
+#   ) %>% 
+#   pivot_longer(everything(),
+#                names_to = c("v", ".value"),
+#                names_pattern = "(.+)_(.+)") -> ds_a[[9]]
+# 
+# 
+# bind_rows(ds_a) %>% 
+#   write_csv("text/descriptive_stats.csv")
+
+
+
+```
+
+
+## Livelihood strategies
+The clustering procedure recognized three main livelihood strategies:
+```{r clustering, fig.width = 8.5, fig.asp = 0.250, dpi = 150}
+
+# IGNORE ********************************************************
+# df_livelihoods %>%
+#   select(all_of(vars_cluster)) %>%
+#   daisy(metric = "gower"#,
+#             #weights = w
+#             ) -> gw_dist
+# 
+# cmdscale(gw_dist, eig = T, k = 3) -> gw_cmd
+
+# pam 
+# pam(gw_cmd$points, k = 3, diss = T) %>% 
+#   .$clustering %>% 
+#   {mutate(df_livelihoods, cluster = factor(.))} -> df_livelihoods
+
+# kmeans
+# set.seed(123)
+# kmeans(gw_cmd$points, centers = 3, nstart = 50) %>%
+#   .$cluster %>%
+#   {mutate(df_livelihoods, cluster = factor(.))} -> df_livelihoods
+
+# hclust
+# hclust(dist(gw_cmd$points), method = "single") %>% 
+#   cutree(3) %>% 
+#   {mutate(df_livelihoods, cluster = factor(.))} -> df_livelihoods
+
+# *******************************************************************
+
+# Clustering
+df_livelihoods %>%
+  select(all_of(vars_cluster)) %>%
+  daisy(metric = "gower"#,
+            # weights = c(3, 1, 1, 1, 1, 1, 1, 1)
+            ) %>%
+
+  pam(k = 3, diss = T) %>%
+  .$clustering %>%
+
+  {mutate(df_livelihoods, cluster = .)} %>% 
+  mutate(cluster = case_when(cluster == 1 ~ 1,
+                             cluster == 3 ~ 2,
+                             cluster == 2 ~ 3) %>% factor()) -> df_livelihoods
+
+
+
+
+# Function to obtain individual plots (per activity)
+func_plot <- function(variable, pos = NA){
+  
+  df_livelihoods %>% 
+    rename(vari = variable) -> df
+  
+  
+  # Difference analysis among clusters
+  
+  # is variable continuous or ordinal?
+  if(is.numeric(df$vari) | is.ordered(df$vari)){
+    
+    # omnibus test
+    df %>% 
+      {kruskal.test(vari ~ cluster, data = .)} %>% 
+      .$p.value %>% 
+      {ifelse(. < 0.001, "p < 0.001\n(K-W)", str_c("p = ", round(., 3), "\n(K-W)"))} -> omni_p
+    
+    # pairwise comparisons
+    df %>%
+      {pairwise.wilcox.test(as.numeric(.$vari), .$cluster, p.adjust.method = "holm")$p.value} %>%
+      as_tibble(rownames = "V2") %>%
+      pivot_longer(-1, names_to = "V1", values_to = "p") %>%
+      filter(!is.na(p)) %>%
+      mutate(v = str_c(V1, "-", V2)) -> pw
+    
+    
+  # is variable categorical?
+  } else {
+    
+    # omnibus test
+    df %>%
+      {chisq.test(.$vari, .$cluster, simulate.p.value = T)} %>%
+      .$p.value %>%
+      {ifelse(. < 0.001, "p < 0.001\n(Chi-sq.)", str_c("p = ", round(., 3), "\n(Chi-sq.)"))} -> omni_p
+
+    # pairwise comparisons
+    combn(seq_len(length(levels(df$cluster))), 2) %>%
+      t() %>%
+      as_tibble() %>%
+      mutate(p = pmap_dbl(list(V1, V2), function(x, y){
+        
+        df %>%
+          filter(cluster %in% c(x, y)) %>%
+          {table(.$vari, as.numeric(.$cluster))} %>%
+          {chisq.test(., simulate.p.value = T)} %>%
+          .$p.value
+
+      })) %>%
+
+      mutate(p = ifelse(is.nan(p), 1, p.adjust(p, "holm"))) %>%
+      mutate(v = str_c(V1, "-", V2)) -> pw
+    
+  }
+  
+  # assign letters of difference
+  pw %>% pull(p) -> let
+  names(let) <- pw %>% pull(v)
+  
+  tibble(cluster = levels(df$cluster)) %>%
+    mutate(grp = multcompView::multcompLetters(let,
+                                               compare = "<",
+                                               threshold = 0.1,
+                                               Letters = letters)$Letters) -> df_let
+  
+  
+  # Generate plots
+  
+  # is variable continuous?
+  if(is.numeric(df$vari)){
+
+    df %>%
+      group_by(cluster) %>%
+      summarize(m = boxplot.stats(vari)$stats,
+                a = mean(vari)) %>%
+      ungroup() %>%
+      mutate(stat = rep(str_c("y_",1:5), length(levels(df$cluster)))) %>%
+      pivot_wider(names_from = stat, values_from = m) %>%
+      left_join(df_let, by = "cluster") %>%
+
+      ggplot(aes(x = cluster, fill = cluster)) +
+      geom_boxplot(aes(ymin = y_1,
+                       lower = y_2,
+                       middle = y_2,
+                       upper = y_4,
+                       ymax = y_5),
+                   stat = "identity", width = 0.7, fatten = NULL) +
+      geom_point(aes(y = a)) +
+      geom_text(aes(y = (max(y_5) - min(y_1))/15 + y_4, label = grp), nudge_x = 0.3, hjust = 0) +
+      coord_flip() +
+      scale_x_discrete(limits = rev(levels(df$cluster))) +
+      scale_y_continuous(breaks = scales::breaks_extended(n = 3),
+                         expand = expansion(mult = c(0.05, 0.15))) +
+      theme(legend.position = "none") +
+      labs(caption = omni_p,
+           x = "strategy",
+           y = variable %>% 
+             str_remove_all('_bin|_dich|_area|_all|_sc') %>% 
+             str_replace_all("_", " ") %>% 
+             str_replace_all("income", "inc")
+             ) -> p
+
+    
+  # is variable categorical or ordinal?
+  } else {
+    
+    df %>%
+      count(cluster, vari, .drop = F) %>% 
+      group_by(cluster) %>% 
+      mutate(m = round(n/sum(n)*100)) %>% 
+      left_join(df_let, by = "cluster") %>% 
+      
+      group_by(cluster) %>% 
+      mutate(v = row_number(),
+             grp = ifelse(v == max(v), grp, NA)) %>% # keep only right-most letter
+      ungroup() %>% 
+      
+      ggplot(aes(x = vari, y = cluster, fill = cluster)) +
+      geom_tile(aes(alpha = m)) + # transparency
+      geom_text(aes(label = m), nudge_x = -0.2, nudge_y = -0.2) +
+      theme(legend.position = "none") +
+      scale_y_discrete(limits = rev(levels(df$cluster))) +
+      geom_text(aes(label = grp), nudge_x = 0.3, nudge_y = 0.3) +
+      labs(caption = omni_p,
+           y = "strategy",
+           x = variable %>% 
+             str_remove_all('_bin|_dich|_area|_income|_all|_sc') %>% 
+             str_replace_all("_", " ")) -> p
+  }
+  
+  
+  # Assemble tibble (column with plots + a column to determine relative width)
+  
+  # remove axis if variable is not the first (left-most)
+  if(is.na(pos)){
+    
+    p + theme(axis.text.y = element_blank(),
+              axis.title.y = element_blank(),
+              axis.ticks.y = element_blank()) -> p
+    
+  }
+  
+  p + theme(axis.title.x = element_text(size = 8)) -> p
+  
+  tibble(
+    variable = variable,
+    
+    plot = list(p),
+    
+    var_width = ifelse(is.numeric(df$vari),
+                       2,
+                       length(levels(df$vari))) # wider widths for factor vars
+  )
+}
+
+
+
+
+# Plot activities
+vars_cluster[-1] %>%
+  map_df(~func_plot(.x)) -> df_plot_activities
+  
+vars_cluster[1] %>% 
+  map_df(~func_plot(vari = .x, pos = "x")) %>% 
+  bind_rows(df_plot_activities) -> df_plot_activities
+
+tibble(variable = vars_cluster) %>% # re-arrage based on order of given variables
+  left_join(df_plot_activities, by = "variable") -> df_plot_activities
+
+wrap_plots(df_plot_activities$plot,
+           design = rep(seq_along(df_plot_activities$var_width), 
+                        times = df_plot_activities$var_width) %>% 
+             {LETTERS[.]} %>% 
+             str_flatten())
+
+```
+
+## Random forest model
+The random forest model predicts (classifies) livelihood strategies based on household assets and community characteristics (i.e., accessibility, poverty levels).
+
+### Out-of-bag confusion matrix
+(rows = observed, cols = predicted)  
+```{r random forest err matrix}
+
+# Fit random forest model
+df_livelihoods %>% 
+  select(cluster,
+         all_of(vars_predictors)) -> df_classif
+  
+set.seed(123)
+randomForest(cluster ~ ., data = df_classif, ntree = 1000, importance = T) -> rf
+rm(df_classif)
+
+rf$err.rate %>% .[nrow(.),1] %>% as.vector() -> oob_error
+rf$confusion
+
+```
+Model's out-of-bag error rate: **`r round(oob_error*100, 2)`%**  
+
+### Variables' importance
+What variables best predict engagement with (membership to) the different livelihood strategies?
+```{r importance, fig.width = 3.4, fig.asp = 1.2, out.width = '40%', dpi=150}
+
+importance(rf, type = 1, scale = T) %>% 
+  as_tibble(rownames = "var") %>%
+  mutate(var = fct_reorder(var, MeanDecreaseAccuracy)) -> df_imp
+  
+df_imp %>% 
+    ggplot(aes(y = MeanDecreaseAccuracy, x = var)) +
+    geom_point(size = 2) +
+    geom_segment(aes(x = var, xend = var, y = 0, yend = MeanDecreaseAccuracy)) +
+    coord_flip() +
+    labs(y = "Mean decrease accuracy") +
+  theme(axis.title.y = element_blank())
+
+```
+
+
+### Partial dependency plots (modeled)
+Modeled relationships (probabilities of membership) between livelihood strategies and predictors 
+```{r pdp, fig.width = 7.6, fig.asp = 0.7, out.width = '90%', dpi=150}
+func_pdp <- function(variable, pos = NA){
+  
+  rf$votes %>% 
+    as.data.frame() %>% 
+    as_tibble() %>% 
+    bind_cols(df_livelihoods) %>% 
+    select(1:3, variable) %>% 
+    rename(vari = variable) %>% 
+    
+    mutate(vari = as.numeric(vari)) %>%
+    
+    pivot_longer(-vari, names_to = "cluster", values_to = "prob") -> df_votes
+  
+  # loop through clusters
+  1:3 %>% 
+    map(function(c){
+      
+      df_votes %>% 
+        filter(cluster == c) %>% 
+        loess(prob ~ vari, ., span = 1) -> l
+        
+      tibble(prob = predict(l, seq(min(df_votes$vari),
+                                   max(df_votes$vari),
+                                   length.out = 80)))
+      
+    }) %>% 
+    bind_cols() %>%
+    
+    # standardize 
+    rowwise() %>% 
+    mutate(s = sum(c_across(1:3))) %>% 
+    ungroup() %>% 
+    mutate(across(1:3, ~.x/s)) %>% 
+    select(-s) %>%
+    
+    mutate(x = seq(min(as.numeric(df_livelihoods[[variable]])),
+                   max(as.numeric(df_livelihoods[[variable]])),
+                   length.out = 80)) %>%
+    
+    pivot_longer(-x, names_to = "cluster", values_to = "prob") %>% 
+    mutate(cluster = str_sub(cluster, -1) %>% factor()) %>% 
+    
+    # plot
+    ggplot(aes(x = x, y = prob, fill = cluster)) +
+    geom_area(color = "white") +
+    labs(x = variable %>% 
+           str_remove_all('_bin|_dich|_area|_all|_sc') %>% 
+           str_replace_all("_", " ")) -> p
+  
+  # is variable continous?
+  if(is.numeric(df_livelihoods[[variable]])){
+    
+    p + scale_x_continuous(breaks = scales::breaks_extended(n = 3)) -> p
+    
+  # is variable categorical or ordinal?
+  } else {
+    
+    if(length(levels(df_livelihoods[[variable]])) == 2){
+      h <- c(0,1)
+    } else if (length(levels(df_livelihoods[[variable]])) == 3){
+      h <- c(0,0.5,1)
+    }
+    
+    p + scale_x_continuous(n.breaks = length(levels(df_livelihoods[[variable]])), 
+                           labels = levels(df_livelihoods[[variable]])) +
+      theme(axis.text.x = element_text(hjust = h)) -> p
+    
+  }
+  
+  # remove y axis text if variable is not the first (left-most)
+  if(is.na(pos)){
+    
+    p + theme(axis.text.y = element_blank(),
+              axis.title.y = element_blank(),
+              axis.ticks.y = element_blank()) -> p
+    
+  }
+  
+  p + 
+    theme(axis.title.x = element_text(size = 8)) +
+    scale_y_continuous(breaks = scales::breaks_extended(n = 3)) -> p
+  
+  tibble(
+    variable = variable,
+    
+    plot = list(p))
+}
+
+
+
+# Plot
+df_imp %>% 
+  {rev(levels(.$var))[-c(1, 7, 13)]} %>% 
+  map_df(~func_pdp(vari = .x)) -> df_pdp
+
+df_imp %>% 
+  {rev(levels(.$var))[c(1, 7, 13)]} %>% 
+  map_df(~func_pdp(vari = .x, pos = "x")) %>% 
+  bind_rows(df_pdp) -> df_pdp
+
+tibble(variable = rev(levels(df_imp$var))) %>% # re-arrage based on order of given variables
+  left_join(df_pdp, by = "variable") -> df_pdp
+
+# design
+c(
+  rep(1:6, each = 2) %>% 
+             {LETTERS[.]} %>% 
+             str_flatten(),
+  
+  "\n",
+  
+  rep(7:12, each = 2) %>% 
+             {LETTERS[.]} %>% 
+             str_flatten(),
+  
+  "\n",
+  
+  rep(13:nrow(df_pdp), each = 2) %>% 
+             {LETTERS[.]} %>%
+             c("##") %>% 
+             str_flatten()
+  
+) %>% 
+  str_flatten() -> des
+
+
+wrap_plots(df_pdp$plot,
+           design = des,
+           guides = 'collect') & theme(legend.position = "bottom")
+
+```
+
+### Partial dependency plots (observed)
+Observed relationships (relative frequency) between livelihood strategies and predictors
+```{r pdp orig, fig.width = 7.6, fig.asp = 0.7, out.width = '90%', dpi=150}
+
+func_pdp_obs <- function(variable, pos = NA){
+  
+  df_livelihoods %>% 
+    select(cluster, variable) %>% 
+    rename(vari = variable) -> df_votes
+    
+  if(is.factor(df_votes$vari) & !is.ordered(df_votes$vari)){
+    
+    df_votes %>% 
+      count(cluster, vari, .drop = F) %>% 
+      group_by(vari) %>% 
+      mutate(rel_freq = n/sum(n),
+             vari = as.numeric(vari)) %>% 
+      ungroup() %>% 
+      
+      ggplot(aes(x = vari, y = rel_freq, fill = cluster)) +
+      geom_area(color = "white") +
+      labs(y = "rel. freq.",
+           x = variable %>% 
+             str_remove_all('_bin|_dich|_area|_all|_sc') %>% 
+             str_replace_all("_", " ")) -> p
+    
+  } else {
+    
+    df_votes %>% 
+      mutate(vari = as.numeric(vari)) -> df_votes
+    
+    # loop through clusters
+    1:3 %>% 
+      map_df(function(c){
+        
+        df_votes %>% 
+          filter(cluster == c) %>% 
+          pull(vari) %>% 
+          density(n = 80, 
+                  from = min(df_votes$vari),
+                  to = max(df_votes$vari),
+                  adjust = 3) -> l
+        
+        tibble(prob = l$y,
+               x = l$x,
+               # x = seq(min(as.numeric(df_livelihoods[[variable]])),
+               #         max(as.numeric(df_livelihoods[[variable]])),
+               #         length.out = 80),
+               cluster = factor(c))
+        
+      }) %>%
+      
+      # standardize
+      group_by(x) %>% 
+      mutate(prob = prob/sum(prob)) %>% 
+      ungroup() %>% 
+      
+      # plot
+      ggplot(aes(x = x, y = prob, fill = cluster)) +
+      geom_area(color = "white") +
+      labs(y = "rel. freq.",
+           x = variable %>% 
+             str_remove_all('_bin|_dich|_area|_all|_sc') %>% 
+             str_replace_all("_", " ")) -> p
+    
+  }
+  
+  # is variable continous?
+  if(is.numeric(df_livelihoods[[variable]])){
+    
+    p + scale_x_continuous(breaks = scales::breaks_extended(n = 3)) -> p
+    
+  # is variable categorical or ordinal?
+  } else {
+    
+    if(length(levels(df_livelihoods[[variable]])) == 2){
+      h <- c(0,1)
+    } else if (length(levels(df_livelihoods[[variable]])) == 3){
+      h <- c(0,0.5,1)
+    }
+    
+    p + 
+      scale_x_continuous(n.breaks = length(levels(df_livelihoods[[variable]])), 
+                         labels = levels(df_livelihoods[[variable]])) +
+      theme(axis.text.x = element_text(hjust = h)) -> p
+    
+  }
+  
+  # remove y axis text if variable is not the first (left-most)
+  if(is.na(pos)){
+    
+    p + theme(axis.text.y = element_blank(),
+              axis.title.y = element_blank(),
+              axis.ticks.y = element_blank()) -> p
+    
+  }
+  
+  p + 
+    theme(axis.title.x = element_text(size = 8)) +
+    scale_y_continuous(breaks = scales::breaks_extended(n = 3)) -> p
+  
+  tibble(
+    variable = variable,
+    
+    plot = list(p))
+}
+
+
+# Plot
+df_imp %>% 
+  {rev(levels(.$var))[-c(1, 7, 13)]} %>% 
+  map_df(~func_pdp_obs(vari = .x)) -> df_pdp
+
+df_imp %>% 
+  {rev(levels(.$var))[c(1,7,13)]} %>% 
+  map_df(~func_pdp_obs(vari = .x, pos = "x")) %>% 
+  bind_rows(df_pdp) -> df_pdp
+
+tibble(variable = rev(levels(df_imp$var))) %>% # re-arrage based on order of given variables
+  left_join(df_pdp, by = "variable") -> df_pdp
+
+wrap_plots(df_pdp$plot,
+           design = des,
+           guides = 'collect') & theme(legend.position = "bottom")
+
+```
+
+
+Observed distribution of predictors by livelihood strategies:
+```{r obsdist, fig.width = 8.5, fig.asp = 0.475, dpi = 150}
+
+# Plot predictors
+df_imp %>% 
+  {rev(levels(.$var))[-c(1, 9)]} %>% 
+  map_df(~func_plot(vari = .x)) -> df_obsdist
+
+df_imp %>% 
+  {rev(levels(.$var))[c(1, 9)]} %>% 
+  map_df(~func_plot(vari = .x, pos = "x")) %>% 
+  bind_rows(df_obsdist) -> df_obsdist
+
+tibble(variable = rev(levels(df_imp$var))) %>% # re-arrage based on order of given variables
+  left_join(df_obsdist, by = "variable") -> df_obsdist
+
+# TEMP ******************
+wrap_plots(df_obsdist$plot[1:8], widths = df_obsdist$var_width[1:8]) -> p_1
+wrap_plots(df_obsdist$plot[9:17], widths = df_obsdist$var_width[9:17]) -> p_2
+
+p_1/p_2
+
+
+# ***********************
+
+# # design
+# c(rep(seq_along(df_obsdist$var_width)[1:8], 
+#       times = df_obsdist$var_width[1:8]) %>% 
+#              {LETTERS[.]} %>% 
+#              str_flatten(),
+#   
+#   "#",
+#   
+#   "\n",
+#   
+#   rep(seq_along(df_obsdist$var_width)[9:17], 
+#       times = df_obsdist$var_width[9:17]) %>% 
+#              {LETTERS[.]} %>% 
+#              str_flatten()
+#   
+#   ) %>% 
+#   str_flatten() -> des
+# 
+# wrap_plots(df_obsdist$plot,
+#            design = des)
+
+```
+
+
+Variables' definition:
+```{r}
+
+tribble(
+  ~variable,                     ~definition,                           ~unit,
+  "maiz_rainfed_area",           "area de maiz de temporal sembrado",   "ha",
+  "maiz_irrigated_area_dich",    "siembra de maiz de riego",            "binario",
+  "frijol_area_dich",            "siembra de frijol",                   "binario",
+  "livestock_value_sc",          "valor total de ganado / 1000",        "pesos",
+  "off_farm_ag_income_dich",     "empleo agrícola asalariado",          "binario",
+  "sec_income_prop",             "porcentaje de miembros empleados en sector secundario","%",
+  "terc_income_prop",            "porcentaje de miembros empleados en sector terciario", "%",
+  "migr_all_bin",                "número de migrantes",                  "n",
+  
+  "access_level",                "nivel de accesibilidad nivel localidad (CONEVAL)", "NA (ordinal)", 
+  "pov_perc",                    "porcentaje población en pobreza nivel municip. (CONEVAL)", "%",
+  "land_hold",                   "posesión de tierras (superficie)",    "ha",
+  "riego",                       "acceso a fuente de irrigación",       "binario",
+  "tractor",                     "posesión de tractor",                 "binario",
+  "yunta",                       "posesión de yunta",                   "binario",
+  "vehicle",                     "posesión de vehículo",                "binario",
+  "procampo_dich",               "participación en PROCAMPO",           "binario",
+  "prospera_dich",               "participación en PROSPERA",           "binario",
+  "hh_size",                     "número de miembros en el hogar",      "n",
+  "hh_adult_may",                "porcentaje de miembros > 65 años",           "%",
+  "hh_male_adult",               "porcentaje de hombres < 65 y > 18 años",     "%",
+  "hh_female_adult",             "porcentaje de mujeres < 65 y > 18 años",     "%",
+  "hh_teenager",                 "porcentaje de miembros < 18 y > 12 años",    "%",  
+  "hh_children",                 "porcentaje de miembros < 12 años",           "%",
+  "sch_9",                       "porcentaje de miembros con secundaria",      "%",
+  "total_income_sc",             "ingreso total anual / 10000",         "pesos") %>% 
+  
+  mutate(variable = variable %>% 
+           str_remove_all('_bin|_dich|_area|_all|_sc') %>% 
+           str_replace_all("_", " ")) %>% 
+  knitr::kable()
+
+```
+
