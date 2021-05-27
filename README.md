@@ -1,1 +1,3 @@
-# Project_mixteca_livelihoods
+# Project: Livelihood heterogeneity and its determinants (Mixteca Alta, Mexico)
+
+This project contains the code used to analyze data and produce figures for paper "Beyond a generalized deagrarianization: Livelihihood heterogeneity and its determinants in the Mixteca Alta, Mexico", submitted to World Development (pending approval). Analysis consists of clustering rural households of the Mixteca based on their level of engagement in different economic activities. A Random Forest was then fit between clusters and a series of predictors (household assets and community-level economic contextual factors) in order to identify livelihood determinants and characterize their effect. A report of results can be found [here](https://raw.githack.com/carlosdobler/Project_mixteca_livelihoods/main/04_livelihoods.html).
